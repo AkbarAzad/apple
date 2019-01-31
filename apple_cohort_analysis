@@ -1,0 +1,198 @@
+#Import apple monthly data
+#Then compile all the monthly data imported 
+#Then perform cohort analysis based on user's first purchase date.
+
+library(xlsx)
+library(readxl)
+library(dplyr)
+library(sqldf)
+library(data.table)
+library(devtools)
+library(githubinstall)
+githubinstall(ggrepel)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+library(tibble)
+library(stringr)
+library(reshape2)
+
+
+#read apple mo
+jun <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple June\\AppleDCB_Singtel_Monthly_Transaction_Report_June2018.xlsx",1)
+jul <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple July\\AppleDCB_Singtel_Monthly_Transaction_Report_July2018.xlsx",2)
+aug <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple August\\AppleDCB_Singtel_Monthly_Transaction_Report_August2018.xlsx",1)
+sep <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple September\\AppleDCB_Singtel_Monthly_Transaction_Report_September2018.xlsx",1)
+oct <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple October\\AppleDCB_Singtel_Monthly_Transaction_Report_October2018.xlsx",1)
+nov <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple November\\AppleDCB_Singtel_Monthly_Transaction_Report_November2018.xlsx",1)
+dec <- read_excel("C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\Apple December\\AppleDCB_Singtel_Monthly_Transaction_Report_December2018.xlsx",1)
+
+dim(jun)
+dim(jul)
+dim(aug)
+dim(sep)
+dim(oct)
+dim(nov)
+dim(dec)
+
+colnames(jun)
+colnames(jul)
+colnames(aug)
+colnames(sep)
+colnames(oct)
+colnames(nov)
+colnames(dec)
+
+#find number of transactions
+txn <- function(x) {
+x_txn <- x %>%
+filter(TransactionType == 'charge') %>%
+filter(Status == 'success')
+txn_len <- length(x_txn$MSISDN)
+print(txn_len)
+}
+
+
+txn(jun)
+txn(jul)
+txn(aug)
+txn(sep)
+txn(oct)
+txn(nov)
+txn(dec)
+
+#compile
+data <- rbind(jun,jul,aug,sep,oct,nov,dec)
+
+
+
+head(data)
+colnames(data)
+table(data$TransactionType)
+table(data$Status)
+
+
+#date column
+head(as.Date(data$TransactionTime,'%Y-%m-%d'))
+data$date <- as.Date(data$TransactionTime,'%Y-%m-%d')
+
+
+#export data
+write.csv(data,"C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\apple_compile.csv",row.names=FALSE)
+
+###cohort###
+data_co <- data %>%
+filter(TransactionType == 'charge') %>%
+filter(Status == 'success') %>%
+group_by(date,MSISDN) %>%
+summarise(revenue = sum(TotalAmount))
+
+#change date format to year and month
+data_co$date <- as.character(data_co$date)
+data_co$month <- month(data_co$date)
+data_co$year <- year(data_co$date)
+
+
+length(unique(data_co$MSISDN))
+
+#changing the date format and grouping by date
+data_co$year_month <- format(as.Date(data_co$date,format='%Y-%m-%d'),format='%Y-%m')
+
+#cohort analysis
+cohort <- data_co %>% #store data in table called cohort
+  group_by(MSISDN) %>% #group all the users/clients together
+  mutate(first = min(year_month)) %>% #for every user/client take the first period
+  group_by(first, year_month) %>% #group by this first period + other periods
+  summarise(users = n_distinct(MSISDN)) %>% #for each combinations, count the number of users
+  spread(year_month, users) #make columns with the period names
+
+
+#align the table created a bove to the left like a normal cohort table starting from column 2
+shiftrow <- function(v){
+  #put a vactor in, strip off leading NA values, and place that amount at the end
+  first_na_index <- min(which(!is.na(v)))
+  
+  #return that bit to the end, and pad with NA's
+  c(v[first_na_index:length(v)], rep(NA, first_na_index-1))
+}
+
+#create a new dataframe, with shifted rows(ad keep the first row)
+shifted <- data.frame(
+  cohort = cohort$first,
+  t(apply(select(as.data.frame(cohort), 2:ncol(cohort)), #from the 2nd column to the end
+          1, #for every row
+          shiftrow
+  ))
+)
+
+#make the column names readable
+#first should be "cohort" and the rest dates
+
+colnames(shifted) <-c("cohort", sub("","month.", str_pad(1:(ncol(shifted)-1),2, pad = "0")))
+
+#percentages
+#we want every year and month to be expressed as a percentange
+#create new table for this . We divide all year,month columns by the first year,month of that row
+shifted_pct <- data.frame(
+  cohort = shifted$cohort, #first row
+  shifted[,2:nrow(shifted)] / shifted[["month.01"]] #rest:divide by year&month1
+)
+
+
+
+
+#                                             PLOTS
+######################################################################################################################
+
+#ggplot loves long data.Let's melt it. One for the absolute values, one for the pcts
+plotdata_abs <- gather(shifted,     "cohort_age", "people"  ,2:ncol(shifted    ))
+plotdata_pct <- gather(shifted_pct, "cohort_age", "percent" ,2:ncol(shifted_pct))
+
+# now add some data.. we need pretty labels..
+# first bit is the length of the width of the wide column (minus 1, that's the cohort name)
+# that contains the absolute numbers
+# last bit is the rest, those are percentages.
+labelnames <- c( plotdata_abs$people[1:(ncol(shifted)-1)],
+                 plotdata_pct$percent[(ncol(shifted)):(nrow(plotdata_pct))])
+
+# we need pretty labels.
+pretty_print <- function(n) {
+  case_when( n <= 1  ~ sprintf("%1.0f %%", n*100),
+             n >  1  ~ as.character(n),
+             TRUE    ~ " ") # for NA values, skip the label
+}
+
+# create the plot data
+plotdata <- data.frame(
+  cohort     = plotdata_pct$cohort,
+  cohort_age = plotdata_pct$cohort_age,
+  percentage = plotdata_pct$percent,
+  label      = pretty_print(labelnames)
+)
+
+#plot (with reordered y axis, oldesr group on top)
+p <- ggplot(plotdata, aes(x = cohort_age, y = reorder(cohort, desc(cohort)))) +
+  geom_raster(aes(fill = percentage)) +
+  #scale_fill_gradient(low = "white", high = "red") + coord_fixed() +
+  scale_fill_continuous(guide = FALSE) + coord_equal(ratio = 1) + # no legend
+  geom_text(aes(label = label), size = 4, color = "white") +
+  xlab("cohort age") + ylab("cohort") + 
+  ggtitle(paste("Retention table (cohort) for Google Play DCB"))
+plot(p)
+
+#ggrepel
+p_repel <- ggplot(plotdata, aes(x = cohort_age, y = reorder(cohort, desc(cohort)))) +
+  geom_raster(aes(fill = percentage)) +
+  #scale_fill_gradient(low = "white", high = "red") + coord_fixed() +
+  scale_fill_continuous(guide = FALSE) + coord_equal(ratio = 1) + # no legend
+  geom_text_repel(aes(label = label), size = 4, color = "white") +
+  xlab("cohort age") + ylab("cohort") + 
+  ggtitle(paste("Retention table (cohort) for Google Play DCB"))
+plot(p_repel)
+
+write.csv(plotdata,"C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\apple_cohort_analysis_table_pct_sum.csv",row.names=FALSE)
+write.csv(plotdata_abs,"C:\\Users\\P1318124\\Desktop\\Apple & Google\\Apple\\apple_cohort_analysis_table_abs_sum.csv",row.names=FALSE)
+
+
+
+
